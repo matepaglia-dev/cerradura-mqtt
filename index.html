@@ -1,0 +1,536 @@
+<!doctype html>
+<!--
+  CERRADURA MQTT — página de control para el celular
+  Autor: Agustín Bielsa
+
+  - Se conecta sola al broker EMQX Cloud por WebSocket seguro (wss, 8084).
+  - La dirección del broker y el usuario están fijos, pero la CONTRASEÑA MQTT
+    NO está escrita en el código (esta página es pública en GitHub): se pide
+    una sola vez y queda recordada en el celular.
+  - NO verifica la contraseña de la puerta: solo la envía. El que decide
+    es el ESP32 (comparando hashes).
+-->
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<!-- Política de seguridad: solo se permite cargar MQTT.js desde jsDelivr y
+     conectarse a servidores wss:// (WebSocket cifrado). -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; worker-src blob:; style-src 'unsafe-inline'; connect-src wss:; img-src data:; base-uri 'none'; form-action 'none'">
+<title>Cerradura MQTT</title>
+<style>
+  /* ---------- Colores: modo claro y oscuro ---------- */
+  :root {
+    --fondo: #f3f5f8;  --tarjeta: #ffffff;  --texto: #17202b;  --suave: #5d6b7a;
+    --borde: #d9dfe6;  --acento: #2156d6;   --acento-texto: #ffffff;
+    --ok: #17803d;     --ok-fondo: #e3f5e9;
+    --mal: #c4321f;    --mal-fondo: #fde8e4;
+    --aviso: #9a6200;  --aviso-fondo: #fff3d6;
+    --gris-fondo: #e9edf2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fondo: #0f141a;  --tarjeta: #19212b;  --texto: #e8edf2;  --suave: #9aa8b6;
+      --borde: #2c3846;  --acento: #5b8cff;   --acento-texto: #0b1020;
+      --ok: #5fd28a;     --ok-fondo: #12301f;
+      --mal: #ff7a66;    --mal-fondo: #3a1714;
+      --aviso: #ffc65c;  --aviso-fondo: #33270c;
+      --gris-fondo: #232d39;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--fondo); color: var(--texto);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 480px; margin: 0 auto; padding: 16px 16px 40px; }
+  h1 { font-size: 1.3rem; margin: 4px 0 12px; }
+  h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  .tarjeta {
+    background: var(--tarjeta); border: 1px solid var(--borde);
+    border-radius: 16px; padding: 16px; margin-bottom: 14px;
+  }
+  [hidden] { display: none !important; }
+
+  /* ---------- Indicadores de conexión ---------- */
+  .indicadores { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pastilla {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
+    border-radius: 999px; background: var(--gris-fondo); font-size: .9rem;
+  }
+  .punto { width: 10px; height: 10px; border-radius: 50%; background: var(--suave); }
+  .pastilla.ok   .punto { background: var(--ok); }
+  .pastilla.mal  .punto { background: var(--mal); }
+
+  /* ---------- Estado de la puerta (bien grande) ---------- */
+  .estado { text-align: center; padding: 26px 16px; }
+  .estado .icono { font-size: 4.2rem; line-height: 1; }
+  .estado .titulo { font-size: 2.4rem; font-weight: 800; letter-spacing: .04em; margin-top: 8px; }
+  .estado .detalle { color: var(--suave); min-height: 1.5em; margin-top: 4px; font-size: 1.05rem; }
+  .estado.abierta   { background: var(--ok-fondo);    border-color: var(--ok); }
+  .estado.abierta   .titulo { color: var(--ok); }
+  .estado.bloqueada { background: var(--mal-fondo);   border-color: var(--mal); }
+  .estado.bloqueada .titulo { color: var(--mal); }
+  .estado.incorrecta .detalle { color: var(--mal); font-weight: 600; }
+
+  /* ---------- Formularios ---------- */
+  label { display: block; font-weight: 600; margin: 10px 0 6px; font-size: .95rem; }
+  .fila { display: flex; gap: 8px; }
+  input[type=text], input[type=password] {
+    width: 100%; min-width: 0; padding: 12px; font-size: 1rem; border-radius: 10px;
+    border: 1px solid var(--borde); background: var(--fondo); color: var(--texto);
+  }
+  button {
+    font: inherit; border-radius: 10px; border: 1px solid var(--borde);
+    background: var(--gris-fondo); color: var(--texto); padding: 12px 14px; cursor: pointer;
+  }
+  button.principal {
+    width: 100%; margin-top: 12px; padding: 16px; font-size: 1.15rem; font-weight: 700;
+    background: var(--acento); color: var(--acento-texto); border: none;
+  }
+  button.ancho { width: 100%; margin-top: 12px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .ojo { flex: 0 0 auto; min-width: 52px; }
+  .check { display: flex; align-items: center; gap: 8px; font-weight: 400; }
+  .enlace { background: none; border: none; color: var(--suave); text-decoration: underline; padding: 6px; font-size: .9rem; }
+  .pie { text-align: center; }
+
+  .aviso { margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: .95rem; }
+  .aviso:empty { display: none; }
+  .aviso.mal   { background: var(--mal-fondo);   color: var(--mal); }
+  .aviso.ok    { background: var(--ok-fondo);    color: var(--ok); }
+  .aviso.info  { background: var(--aviso-fondo); color: var(--aviso); }
+
+  details > summary { font-weight: 700; cursor: pointer; padding: 2px 0; }
+  .nota { color: var(--suave); font-size: .88rem; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔐 Cerradura MQTT</h1>
+
+  <!-- Indicadores: broker y ESP32 -->
+  <div class="indicadores">
+    <span id="indBroker" class="pastilla mal"><span class="punto"></span><span id="txtBroker">Broker: desconectado</span></span>
+    <span id="indEsp" class="pastilla"><span class="punto"></span><span id="txtEsp">ESP32: sin datos</span></span>
+  </div>
+
+  <!-- Acceso: solo aparece si todavía no se cargó la clave MQTT (o si está mal) -->
+  <section id="tarjetaAcceso" class="tarjeta" hidden>
+    <h2>🔑 Clave de acceso</h2>
+    <p class="nota" style="margin-top:0">Es la contraseña MQTT del usuario "web". Se pide una sola vez.</p>
+    <div class="fila" style="margin-top:10px">
+      <input id="claveMqtt" type="password" autocomplete="off" autocapitalize="off"
+             spellcheck="false" placeholder="Clave de acceso" aria-label="Clave de acceso">
+      <button id="verClaveMqtt" class="ojo" type="button" aria-label="Mostrar clave de acceso">👁</button>
+    </div>
+    <label class="check"><input id="recordar" type="checkbox" checked> Recordar en este celular</label>
+    <button id="btnConectar" class="principal" type="button">Conectar</button>
+    <div id="avisoAcceso" class="aviso" role="status"></div>
+  </section>
+
+  <!-- Estado de la puerta -->
+  <section id="tarjetaEstado" class="tarjeta estado">
+    <div id="estadoIcono" class="icono">❔</div>
+    <div id="estadoTitulo" class="titulo">SIN DATOS</div>
+    <div id="estadoDetalle" class="detalle">Sin conexión con el broker</div>
+  </section>
+
+  <!-- Abrir la puerta -->
+  <section class="tarjeta">
+    <label for="clavePuerta">Contraseña de la puerta</label>
+    <div class="fila">
+      <input id="clavePuerta" type="password" autocomplete="off" autocapitalize="off"
+             spellcheck="false" maxlength="64" placeholder="Escribí la contraseña">
+      <button id="verClavePuerta" class="ojo" type="button" aria-label="Mostrar contraseña">👁</button>
+    </div>
+    <button id="btnAbrir" class="principal" type="button" disabled>Abrir puerta</button>
+    <div id="avisoAbrir" class="aviso" role="status"></div>
+  </section>
+
+  <!-- Cambiar la contraseña de la puerta -->
+  <section class="tarjeta">
+    <details>
+      <summary>🔄 Cambiar contraseña de la puerta</summary>
+      <p class="nota">El ESP32 revisa la contraseña actual. La nueva nunca viaja:
+        se manda solo su hash (con una sal nueva al azar).</p>
+      <label for="claveActual">Contraseña actual</label>
+      <div class="fila">
+        <input id="claveActual" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
+        <button id="verClaveActual" class="ojo" type="button" aria-label="Mostrar contraseña actual">👁</button>
+      </div>
+      <label for="claveNueva">Contraseña nueva (8 a 64 caracteres)</label>
+      <div class="fila">
+        <input id="claveNueva" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="64">
+        <button id="verClaveNueva" class="ojo" type="button" aria-label="Mostrar contraseña nueva">👁</button>
+      </div>
+      <label for="claveRepetir">Repetí la nueva</label>
+      <input id="claveRepetir" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" maxlength="64">
+      <button id="btnCambiar" class="ancho" type="button" disabled>Cambiar contraseña</button>
+      <div id="avisoCambio" class="aviso" role="status"></div>
+    </details>
+  </section>
+
+  <div class="pie">
+    <button id="btnOlvidar" class="enlace" type="button">Olvidar la clave de acceso de este celular</button>
+  </div>
+</main>
+
+<!-- MQTT.js desde jsDelivr, con versión fija y "integrity": si alguien
+     modificara el archivo en el CDN, el navegador se niega a ejecutarlo. -->
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.16.1/dist/mqtt.min.js"
+        integrity="sha384-ilRYg/zm2XqUafLvBoGVk40UfNRnvUkYMy+e/JPo4YgsFR6X9Q3jYEkqFQXquX4r"
+        crossorigin="anonymous"></script>
+
+<script>
+"use strict";
+
+// ================= Datos fijos del broker (no son secretos) =================
+const BROKER_URL   = "wss://a3fe79b5.ala.us-east-1.emqxsl.com:8084/mqtt";
+const USUARIO_MQTT = "web";
+// La CLAVE MQTT no va acá: la página es pública. Se pide una vez.
+
+// ================= Topics =================
+const TOPIC_INTENTO  = "cerradura/intento";   // la página publica acá
+const TOPIC_CAMBIO   = "cerradura/cambio";    // pedido de cambio de contraseña
+const TOPIC_ESTADO   = "cerradura/estado";    // el ESP32 informa acá (retenido)
+const TOPIC_CONEXION = "cerradura/conexion";  // "online" / "offline"
+const CLAVE_GUARDADO = "cerradura-clave-mqtt"; // nombre en localStorage
+const ESPERA_RESPUESTA_MS = 5000;              // si el ESP32 no contesta en 5 s, aviso
+
+// ================= Estado de la página =================
+let cliente = null;            // conexión MQTT
+let brokerConectado = false;
+let esp32Online = null;        // null = todavía no sabemos
+let bloqueadoHasta = 0;        // momento (ms) en que termina el bloqueo
+let esperando = null;          // null, "abrir" o "cambio": qué respuesta esperamos
+let timerRespuesta = null;
+let timerCuenta = null;
+
+// Atajo para buscar elementos por id
+const $ = (id) => document.getElementById(id);
+
+// ================= Utilidades =================
+
+// Muestra un mensaje en una caja de aviso. Se usa textContent (nunca
+// innerHTML) para que un mensaje raro no pueda inyectar código en la página.
+function avisar(idCaja, texto, tipo) {
+  const caja = $(idCaja);
+  caja.textContent = texto || "";
+  caja.className = "aviso " + (tipo || "info");
+}
+
+// Botón de "ojito" para mostrar u ocultar una contraseña
+function botonOjo(idBoton, idCampo) {
+  $(idBoton).addEventListener("click", () => {
+    const campo = $(idCampo);
+    campo.type = campo.type === "password" ? "text" : "password";
+  });
+}
+
+// localStorage puede fallar (modo incógnito, etc.): siempre con try/catch
+function leerClaveGuardada() {
+  try { return localStorage.getItem(CLAVE_GUARDADO); } catch (e) { return null; }
+}
+function guardarClave(clave) {
+  try { localStorage.setItem(CLAVE_GUARDADO, clave); } catch (e) {}
+}
+function borrarClave() {
+  try { localStorage.removeItem(CLAVE_GUARDADO); } catch (e) {}
+}
+
+// ================= Indicadores y botones =================
+
+function actualizarIndicadores() {
+  $("indBroker").className = "pastilla " + (brokerConectado ? "ok" : "mal");
+  $("txtBroker").textContent = brokerConectado ? "Broker: conectado" : "Broker: desconectado";
+
+  let clase = "pastilla", texto = "ESP32: sin datos";
+  if (brokerConectado && esp32Online === true)  { clase += " ok";  texto = "ESP32: en línea"; }
+  if (brokerConectado && esp32Online === false) { clase += " mal"; texto = "ESP32: desconectado"; }
+  $("indEsp").className = clase;
+  $("txtEsp").textContent = texto;
+
+  // Los botones solo se habilitan si hay broker, el ESP32 no está caído,
+  // no hay bloqueo y no estamos esperando una respuesta anterior.
+  const bloqueado = Date.now() < bloqueadoHasta;
+  const noSePuede = !brokerConectado || esp32Online === false || bloqueado || esperando !== null;
+  $("btnAbrir").disabled = noSePuede;
+  $("btnCambiar").disabled = noSePuede;
+}
+
+function mostrarPuerta(icono, titulo, detalle, clase) {
+  $("tarjetaEstado").className = "tarjeta estado " + (clase || "");
+  $("estadoIcono").textContent = icono;
+  $("estadoTitulo").textContent = titulo;
+  $("estadoDetalle").textContent = detalle;
+}
+
+// Sin broker no sabemos cómo está la puerta: no mostramos un dato viejo.
+function mostrarSinConexion() {
+  clearInterval(timerCuenta);
+  bloqueadoHasta = 0;
+  mostrarPuerta("❔", "SIN DATOS", "Sin conexión con el broker", "");
+}
+
+// ================= Mensajes que llegan del ESP32 =================
+
+function procesarEstado(texto, esRetenido) {
+  let datos;
+  try { datos = JSON.parse(texto); } catch (e) { return; }   // ignoramos lo que no sea JSON
+  if (!datos || typeof datos.estado !== "string") return;
+  // Si el ESP32 está desconectado, ese estado es viejo: no lo mostramos.
+  if (esp32Online === false) return;
+
+  // ¿A qué pedido corresponde esta respuesta? (para avisar en la caja correcta)
+  const cajaAviso = esperando === "cambio" ? "avisoCambio" : "avisoAbrir";
+  const eraRespuesta = !esRetenido && esperando !== null;
+  if (eraRespuesta) terminarEspera();
+
+  // Aviso de cambio de contraseña (no cambia la puerta)
+  if (datos.estado === "clave_cambiada") {
+    avisar("avisoCambio", "✔ Contraseña cambiada. Desde ahora abre con la nueva.", "ok");
+    actualizarIndicadores();
+    return;
+  }
+
+  clearInterval(timerCuenta);
+  bloqueadoHasta = 0;
+
+  const numero = Number.isFinite(datos.segundos) ? datos.segundos
+               : Number.isFinite(datos.intentos) ? datos.intentos : 0;
+
+  switch (datos.estado) {
+    case "cerrada":
+      mostrarPuerta("🔒", "CERRADA", "", "");
+      break;
+    case "abierta":
+      mostrarPuerta("🔓", "ABIERTA", "Se cierra sola en unos segundos", "abierta");
+      if (eraRespuesta) avisar("avisoAbrir", "Contraseña correcta. ¡Puerta abierta!", "ok");
+      break;
+    case "incorrecta":
+      mostrarPuerta("🔒", "CERRADA",
+        esRetenido ? `Último intento incorrecto (quedan ${numero})`
+                   : `Contraseña incorrecta · quedan ${numero} intento${numero === 1 ? "" : "s"}`,
+        "incorrecta");
+      if (eraRespuesta) {
+        avisar(cajaAviso, cajaAviso === "avisoCambio"
+          ? "La contraseña actual es incorrecta. No se cambió."
+          : "Contraseña incorrecta.", "mal");
+      }
+      break;
+    case "bloqueada":
+      bloqueadoHasta = Date.now() + numero * 1000;
+      iniciarCuentaRegresiva();
+      if (eraRespuesta) avisar(cajaAviso, "Demasiados errores: cerradura bloqueada.", "mal");
+      break;
+  }
+  actualizarIndicadores();
+}
+
+// Cuenta regresiva del bloqueo, calculada en la página (1 vez por segundo)
+function iniciarCuentaRegresiva() {
+  const pintar = () => {
+    const faltan = Math.max(0, Math.ceil((bloqueadoHasta - Date.now()) / 1000));
+    mostrarPuerta("⛔", "BLOQUEADA",
+      faltan > 0 ? `Esperá ${faltan} s para volver a intentar` : "Esperando al ESP32…", "bloqueada");
+    if (faltan === 0) clearInterval(timerCuenta);
+    actualizarIndicadores();
+  };
+  pintar();
+  timerCuenta = setInterval(pintar, 1000);
+}
+
+// ================= Enviar pedidos al ESP32 =================
+
+function terminarEspera() {
+  esperando = null;
+  clearTimeout(timerRespuesta);
+}
+
+// Marca que esperamos respuesta; si no llega en 5 s, avisa.
+function esperarRespuesta(tipo, idCaja) {
+  esperando = tipo;
+  timerRespuesta = setTimeout(() => {
+    esperando = null;
+    avisar(idCaja, "⚠️ El ESP32 no contesta. ¿Está encendido y con WiFi?", "mal");
+    actualizarIndicadores();
+  }, ESPERA_RESPUESTA_MS);
+  actualizarIndicadores();
+}
+
+function enviarIntento() {
+  const campo = $("clavePuerta");
+  const clave = campo.value;
+  if (!clave) { avisar("avisoAbrir", "Escribí la contraseña.", "info"); return; }
+  if (!cliente || !brokerConectado) return;
+
+  // Se manda tal cual (por TLS). La página NO sabe si es correcta.
+  cliente.publish(TOPIC_INTENTO, clave, { qos: 0, retain: false });
+  campo.value = "";                    // no dejamos la contraseña en pantalla
+  campo.type = "password";
+  avisar("avisoAbrir", "Enviado. Esperando respuesta del ESP32…", "info");
+  esperarRespuesta("abrir", "avisoAbrir");
+}
+
+function aHex(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Cambio de contraseña: se manda [sal nueva][hash nuevo][contraseña actual].
+async function cambiarClave() {
+  const actual = $("claveActual").value;
+  const nueva = $("claveNueva").value;
+  const repetir = $("claveRepetir").value;
+  const largo = new TextEncoder().encode(nueva).length;   // bytes, como los cuenta el ESP32
+
+  if (!actual) { avisar("avisoCambio", "Escribí la contraseña actual.", "mal"); return; }
+  if (nueva !== repetir) { avisar("avisoCambio", "Las contraseñas nuevas no coinciden.", "mal"); return; }
+  if (largo < 8)  { avisar("avisoCambio", "La nueva tiene que tener al menos 8 caracteres.", "mal"); return; }
+  if (largo > 64) { avisar("avisoCambio", "Máximo 64 caracteres.", "mal"); return; }
+  if (nueva === actual) { avisar("avisoCambio", "La nueva tiene que ser distinta de la actual.", "mal"); return; }
+  if (!window.crypto || !crypto.subtle) {
+    avisar("avisoCambio", "Este navegador no permite calcular el hash (necesita https).", "mal"); return;
+  }
+  if (!cliente || !brokerConectado) return;
+
+  // Sal nueva: 16 bytes al azar del generador criptográfico del navegador.
+  const sal = aHex(crypto.getRandomValues(new Uint8Array(16)));
+  // Hash de la nueva: SHA-256 de (sal + contraseña nueva), igual que en el ESP32.
+  const resumen = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sal + nueva));
+  const hash = aHex(new Uint8Array(resumen));
+
+  cliente.publish(TOPIC_CAMBIO, sal + hash + actual, { qos: 0, retain: false });
+  $("claveActual").value = ""; $("claveNueva").value = ""; $("claveRepetir").value = "";
+  avisar("avisoCambio", "Enviado. Esperando que el ESP32 verifique la actual…", "info");
+  esperarRespuesta("cambio", "avisoCambio");
+}
+
+// ================= Conexión al broker =================
+
+function desconectar() {
+  if (cliente) { cliente.end(true); cliente = null; }
+  brokerConectado = false;
+  esp32Online = null;
+  terminarEspera();
+  mostrarSinConexion();
+  actualizarIndicadores();
+}
+
+function pedirClave(mensaje, tipo) {
+  $("tarjetaAcceso").hidden = false;
+  avisar("avisoAcceso", mensaje, tipo);
+}
+
+function conectar(claveMqtt) {
+  if (typeof mqtt === "undefined") {
+    pedirClave("No se pudo cargar la librería MQTT.js (¿hay internet?).", "mal");
+    return;
+  }
+  desconectar();
+  mostrarPuerta("❔", "SIN DATOS", "Conectando…", "");
+
+  cliente = mqtt.connect(BROKER_URL, {
+    username: USUARIO_MQTT,
+    password: claveMqtt,
+    clientId: "web-" + Math.random().toString(16).slice(2, 10),
+    clean: true,
+    protocolVersion: 4,         // MQTT 3.1.1
+    reconnectPeriod: 5000,      // reintenta cada 5 s si se corta
+    connectTimeout: 10000,
+  });
+
+  cliente.on("connect", () => {
+    brokerConectado = true;
+    $("tarjetaAcceso").hidden = true;      // ya no hace falta pedir la clave
+    // Si el ESP32 nunca se conectó, no hay estado guardado: lo decimos.
+    mostrarPuerta("❔", "SIN DATOS", "Esperando datos del ESP32…", "");
+    // La página solo ESCUCHA estado y conexión (no puede leer los intentos).
+    cliente.subscribe([TOPIC_ESTADO, TOPIC_CONEXION], { qos: 0 });
+    actualizarIndicadores();
+  });
+
+  cliente.on("message", (topic, mensaje, paquete) => {
+    const texto = mensaje.toString();
+    if (topic === TOPIC_CONEXION) {
+      esp32Online = (texto === "online");
+      if (!esp32Online) {
+        clearInterval(timerCuenta);
+        bloqueadoHasta = 0;
+        mostrarPuerta("❔", "SIN DATOS", "El ESP32 está desconectado", "");
+        avisar("avisoAbrir", "⚠️ El ESP32 está desconectado del broker.", "mal");
+      } else if ($("avisoAbrir").textContent.includes("desconectado")) {
+        avisar("avisoAbrir", "");
+      }
+      actualizarIndicadores();
+    } else if (topic === TOPIC_ESTADO) {
+      procesarEstado(texto, paquete.retain);
+    }
+  });
+
+  // Se cortó la conexión (MQTT.js reintenta solo cada 5 s)
+  const alPerderConexion = () => {
+    brokerConectado = false;
+    esp32Online = null;
+    terminarEspera();
+    mostrarSinConexion();
+    actualizarIndicadores();
+  };
+  cliente.on("close", alPerderConexion);
+  cliente.on("offline", alPerderConexion);
+
+  cliente.on("error", (err) => {
+    // Códigos 4 y 5 = clave incorrecta o sin permiso: la volvemos a pedir.
+    if (err && (err.code === 4 || err.code === 5)) {
+      borrarClave();
+      desconectar();
+      pedirClave("La clave de acceso es incorrecta.", "mal");
+    }
+  });
+}
+
+// ================= Arranque =================
+
+botonOjo("verClaveMqtt", "claveMqtt");
+botonOjo("verClavePuerta", "clavePuerta");
+botonOjo("verClaveActual", "claveActual");
+botonOjo("verClaveNueva", "claveNueva");
+
+$("btnAbrir").addEventListener("click", enviarIntento);
+$("clavePuerta").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !$("btnAbrir").disabled) enviarIntento();
+});
+$("btnCambiar").addEventListener("click", cambiarClave);
+
+function botonConectar() {
+  const clave = $("claveMqtt").value;
+  if (!clave) { avisar("avisoAcceso", "Escribí la clave de acceso.", "mal"); return; }
+  if ($("recordar").checked) guardarClave(clave); else borrarClave();
+  $("claveMqtt").value = "";
+  avisar("avisoAcceso", "Conectando…", "info");
+  conectar(clave);
+}
+$("btnConectar").addEventListener("click", botonConectar);
+$("claveMqtt").addEventListener("keydown", (e) => { if (e.key === "Enter") botonConectar(); });
+
+$("btnOlvidar").addEventListener("click", () => {
+  borrarClave();
+  desconectar();
+  pedirClave("Clave borrada de este celular.", "info");
+});
+
+// Si la clave ya está recordada, se conecta sola. Si no, la pide.
+const guardada = leerClaveGuardada();
+if (guardada) {
+  conectar(guardada);
+} else {
+  pedirClave("", "info");
+}
+actualizarIndicadores();
+</script>
+</body>
+</html>

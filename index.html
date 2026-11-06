@@ -447,6 +447,7 @@ function conectar(claveMqtt) {
   cliente.on("connect", () => {
     brokerConectado = true;
     $("tarjetaAcceso").hidden = true;      // ya no hace falta pedir la clave
+    avisar("avisoAcceso", "");
     // Si el ESP32 nunca se conectó, no hay estado guardado: lo decimos.
     mostrarPuerta("❔", "SIN DATOS", "Esperando datos del ESP32…", "");
     // La página solo ESCUCHA estado y conexión (no puede leer los intentos).
@@ -472,12 +473,21 @@ function conectar(claveMqtt) {
     }
   });
 
-  // Se cortó la conexión (MQTT.js reintenta solo cada 5 s)
+  // Se cortó la conexión, o no se pudo conectar (MQTT.js reintenta solo cada 5 s)
+  const esteCliente = cliente;
   const alPerderConexion = () => {
+    if (esteCliente !== cliente) return;   // es una conexión vieja que ya cerramos
     brokerConectado = false;
     esp32Online = null;
     terminarEspera();
     mostrarSinConexion();
+    // Si la tarjeta de clave está a la vista, todavía no conectó nunca: avisamos.
+    if (!$("tarjetaAcceso").hidden || !cliente) {
+      avisar("avisoAcceso", "No se pudo llegar al broker. Reintentando cada 5 s… " +
+        "Si sigue así, la red bloquea el puerto 8084: probá con datos móviles u otra WiFi.", "mal");
+    } else {
+      $("estadoDetalle").textContent = "Sin conexión con el broker (reintentando…)";
+    }
     actualizarIndicadores();
   };
   cliente.on("close", alPerderConexion);
@@ -526,6 +536,7 @@ $("btnOlvidar").addEventListener("click", () => {
 // Si la clave ya está recordada, se conecta sola. Si no, la pide.
 const guardada = leerClaveGuardada();
 if (guardada) {
+  avisar("avisoAcceso", "Conectando…", "info");
   conectar(guardada);
 } else {
   pedirClave("", "info");
